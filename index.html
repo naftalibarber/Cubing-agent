@@ -13,8 +13,9 @@
       <div>
         <h1>Cubing Agent</h1>
         <p>
-          שאל על שיאי ספידקיובינג בשפה חופשית. Gemini מפרש את השאלה,
-          אבל תוצאת השיא עצמה נשלפת ממאגר תוצאות WCA שמתעדכן מדי יום.
+          שאל על שיאי ספידקיובינג בשפה חופשית — גם על כמה שיאים יחד.
+          בקשות ברורות מפורשות מקומית ומהר; Gemini נכנס לפעולה רק כשבאמת צריך.
+          תוצאות השיא נשלפות ממאגר WCA שמתעדכן מדי יום.
         </p>
       </div>
       <div class="source-pill" id="sourceDate">טוען תאריך נתונים…</div>
@@ -26,6 +27,7 @@
         <textarea id="question" placeholder="לדוגמה: מה שיא העולם ב-3x3 single?"></textarea>
 
         <div class="examples">
+          <button class="chip" data-q="מה שיאי העולם ב-2x2, 3x3, 4x4 ו-5x5 single?">כמה שיאים יחד</button>
           <button class="chip" data-q="מה שיא העולם ב-3x3 single?">3x3 WR single</button>
           <button class="chip" data-q="מה שיא העולם בממוצע 4x4?">4x4 WR average</button>
           <button class="chip" data-q="מה שיא ישראל ב-2x2 single?">שיא ישראל 2x2</button>
@@ -39,8 +41,8 @@
 
         <div class="answer" id="answer">
           <div class="answer-empty">
-            התשובה תופיע כאן. אפשר לשאול על World Record, שיא מדינה או יבשת,
-            ועל Single או Average.
+            התשובה תופיע כאן. אפשר לבקש World Record, שיא מדינה או יבשת,
+            Single או Average — וגם רשימה של כמה אירועים באותה שאלה.
           </div>
         </div>
       </div>
@@ -48,7 +50,8 @@
       <aside class="card settings-card">
         <h2>הגדרות Gemini</h2>
         <p class="intro">
-          אפשר להכניס כמה מפתחות שתרצה. אם מפתח אחד נכשל, הסוכן עובר אוטומטית לבא אחריו.
+          אפשר להכניס כמה מפתחות שתרצה. בבקשה מורכבת הסוכן ינסה לכל היותר שני מפתחות,
+          עם timeout קצר ו-cooldown למפתח שנתקע — כדי שלא להיכנס ללולאת ניסיונות.
         </p>
 
         <div class="field">
