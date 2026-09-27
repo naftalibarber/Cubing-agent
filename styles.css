@@ -354,3 +354,37 @@ button:disabled {
   .settings-card { position: static; }
   .hero { flex-direction: column; }
 }
+
+
+.multi-summary {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: 16px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.multi-summary strong {
+  color: var(--text);
+  display: block;
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.record-list {
+  display: grid;
+  gap: 16px;
+}
+
+.record-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+  background: var(--panel);
+}
+
+.record-card .record-value {
+  font-size: clamp(28px, 5vw, 48px);
+}
