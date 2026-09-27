@@ -7,6 +7,12 @@ var sourceVersion = null;
 var eventsCache = null;
 var countriesCache = null;
 var continentsCache = null;
+var keyCooldownUntil = Object.create(null);
+
+var GEMINI_TIMEOUT_MS = 7000;
+var MAX_GEMINI_ATTEMPTS_PER_QUESTION = 2;
+var KEY_COOLDOWN_MS = 5 * 60 * 1000;
+var MAX_RECORDS_PER_QUERY = 20;
 
 var FALLBACK_EVENTS = {
   "222": "2x2x2 Cube",
@@ -254,11 +260,61 @@ function normalizeIntent(intent) {
   };
 }
 
-function heuristicIntent(question) {
-  var q = String(question || "").toLowerCase();
-  var eventId = null;
+function normalizeIntents(payload) {
+  var raw = Array.isArray(payload)
+    ? payload
+    : payload && Array.isArray(payload.intents)
+      ? payload.intents
+      : [payload];
 
-  var aliases = [
+  var out = [];
+  var seen = Object.create(null);
+
+  raw.forEach(function (item) {
+    if (!item) return;
+
+    try {
+      var normalized = normalizeIntent(item);
+      var key =
+        normalized.eventId + "|" +
+        normalized.rankType + "|" +
+        normalized.region;
+
+      if (!seen[key]) {
+        seen[key] = true;
+        out.push(normalized);
+      }
+    } catch (_) {}
+  });
+
+  if (!out.length) {
+    throw new Error("לא הצלחתי לזהות אף שיא תקין.");
+  }
+
+  return out.slice(0, MAX_RECORDS_PER_QUERY);
+}
+
+function containsAny(text, aliases) {
+  return aliases.some(function (alias) {
+    return text.includes(alias);
+  });
+}
+
+function removeAliases(text, aliases) {
+  var out = text;
+
+  aliases.forEach(function (alias) {
+    out = out.split(alias).join(" ");
+  });
+
+  return out;
+}
+
+function extractEventIds(question) {
+  var working = String(question || "").toLowerCase();
+  var found = [];
+
+  var specialized = [
     ["333mbf", ["multi blind", "multi-blind", "mbld", "מולטי בליינד", "מולטי עיוור"]],
     ["555bf", ["5x5 blind", "5x5 blindfolded", "555bf", "5x5 עיוור"]],
     ["444bf", ["4x4 blind", "4x4 blindfolded", "444bf", "4x4 עיוור"]],
@@ -269,62 +325,129 @@ function heuristicIntent(question) {
     ["minx", ["megaminx", "מגמינקס"]],
     ["pyram", ["pyraminx", "פירמינקס"]],
     ["skewb", ["skewb", "סקיוב"]],
-    ["sq1", ["square-1", "square 1", "sq1", "סקוור"]],
-    ["777", ["7x7", "777"]],
-    ["666", ["6x6", "666"]],
-    ["555", ["5x5", "555"]],
-    ["444", ["4x4", "444"]],
-    ["333", ["3x3", "333", "קובייה הונגרית"]],
-    ["222", ["2x2", "222"]]
+    ["sq1", ["square-1", "square 1", "sq1", "סקוור"]]
   ];
 
-  aliases.some(function (row) {
-    if (row[1].some(function (alias) { return q.includes(alias); })) {
-      eventId = row[0];
-      return true;
+  specialized.forEach(function (row) {
+    if (containsAny(working, row[1])) {
+      found.push(row[0]);
+      working = removeAliases(working, row[1]);
     }
-
-    return false;
   });
 
-  var rankType = /average|\bavg\b|mean|ממוצע|ממוצעת|ao5|ao3/.test(q)
-    ? "average"
-    : "single";
+  var standard = [
+    ["777", ["7x7", "7×7", "777"]],
+    ["666", ["6x6", "6×6", "666"]],
+    ["555", ["5x5", "5×5", "555"]],
+    ["444", ["4x4", "4×4", "444"]],
+    ["333", ["3x3", "3×3", "333", "קובייה הונגרית"]],
+    ["222", ["2x2", "2×2", "222"]]
+  ];
 
-  var region = "world";
+  standard.forEach(function (row) {
+    if (containsAny(working, row[1])) {
+      found.push(row[0]);
+      working = removeAliases(working, row[1]);
+    }
+  });
 
-  if (/ישראל|israel|\bil\b/.test(q)) region = "IL";
-  else if (/אירופה|europe/.test(q)) region = "europe";
-  else if (/אסיה|asia/.test(q)) region = "asia";
-  else if (/אוקיאניה|oceania/.test(q)) region = "oceania";
-  else if (/אפריקה|africa/.test(q)) region = "africa";
-  else if (/צפון אמריקה|north america/.test(q)) region = "north-america";
-  else if (/דרום אמריקה|south america/.test(q)) region = "south-america";
+  return Array.from(new Set(found));
+}
 
-  if (!eventId) {
-    throw new Error("לא הצלחתי לזהות את האירוע. נסה לכתוב למשל 3x3, 4x4, Pyraminx או Clock.");
+function extractRankTypes(question) {
+  var q = String(question || "").toLowerCase();
+  var types = [];
+
+  if (/single|סינגל|בודד|יחיד/.test(q)) {
+    types.push("single");
   }
 
-  return normalizeIntent({
-    eventId: eventId,
-    rankType: rankType,
-    region: region
+  if (/average|\bavg\b|mean|ממוצע|ממוצעת|ao5|ao3/.test(q)) {
+    types.push("average");
+  }
+
+  if (!types.length) {
+    types.push("single");
+  }
+
+  return types;
+}
+
+function extractRegions(question) {
+  var q = String(question || "").toLowerCase();
+  var regions = [];
+
+  if (/ישראל|israel|\bil\b/.test(q)) regions.push("IL");
+  if (/אירופה|europe/.test(q)) regions.push("europe");
+  if (/אסיה|asia/.test(q)) regions.push("asia");
+  if (/אוקיאניה|oceania/.test(q)) regions.push("oceania");
+  if (/אפריקה|africa/.test(q)) regions.push("africa");
+  if (/צפון אמריקה|north america/.test(q)) regions.push("north-america");
+  if (/דרום אמריקה|south america/.test(q)) regions.push("south-america");
+  if (/שיא עולם|שיאי עולם|world record|\bwr\b|עולמי|עולמיים/.test(q)) regions.push("world");
+
+  if (!regions.length) {
+    regions.push("world");
+  }
+
+  return Array.from(new Set(regions));
+}
+
+function heuristicIntentsDetailed(question) {
+  var events = extractEventIds(question);
+
+  if (!events.length) {
+    throw new Error(
+      "לא הצלחתי לזהות את האירוע. נסה לכתוב למשל 2x2, 3x3, 4x4, Pyraminx או Clock."
+    );
+  }
+
+  var types = extractRankTypes(question);
+  var regions = extractRegions(question);
+  var intents = [];
+
+  regions.forEach(function (region) {
+    types.forEach(function (rankType) {
+      events.forEach(function (eventId) {
+        intents.push(
+          normalizeIntent({
+            eventId: eventId,
+            rankType: rankType,
+            region: region
+          })
+        );
+      });
+    });
   });
+
+  var confident = true;
+
+  if (events.length > 1 && regions.length > 1) confident = false;
+  if (events.length > 1 && types.length > 1) confident = false;
+
+  return {
+    intents: normalizeIntents(intents),
+    confident: confident
+  };
+}
+
+function heuristicIntents(question) {
+  return heuristicIntentsDetailed(question).intents;
 }
 
 function buildParserPrompt(question) {
   return [
-    "You are a parser for WCA speedcubing record questions.",
-    "Return ONLY valid JSON, with no markdown.",
-    "Required keys: eventId, rankType, region.",
+    "You parse WCA speedcubing record requests.",
+    "Return ONLY valid JSON with this exact shape: {\"intents\":[...]}",
+    "Each intent must have eventId, rankType, region.",
+    "The user may ask for several records in one request. Return one intent for every requested record.",
     "eventId must be one of: 222,333,444,555,666,777,333bf,333fm,333oh,clock,minx,pyram,skewb,sq1,444bf,555bf,333mbf.",
     "rankType must be single or average.",
     "region must be world, a two-letter WCA country code such as IL, US or PL, or one continent id: africa, asia, europe, north-america, oceania, south-america.",
-    "Interpret both Hebrew and English.",
-    "Examples:",
-    "Hebrew Israel 2x2 record means eventId 222, rankType single, region IL.",
-    "World record 4x4 average means eventId 444, rankType average, region world.",
-    "Hebrew European 3x3 one-handed average means eventId 333oh, rankType average, region europe.",
+    "Interpret Hebrew and English.",
+    "Do not answer the question and do not invent record values. Only parse the requested records.",
+    "Maximum " + MAX_RECORDS_PER_QUERY + " intents.",
+    "Example: world records for 2x2, 3x3 and 4x4 single => {\"intents\":[{\"eventId\":\"222\",\"rankType\":\"single\",\"region\":\"world\"},{\"eventId\":\"333\",\"rankType\":\"single\",\"region\":\"world\"},{\"eventId\":\"444\",\"rankType\":\"single\",\"region\":\"world\"}]}",
     "Question: " + question
   ].join("\n");
 }
@@ -351,7 +474,10 @@ async function geminiRequest(apiKey, model, prompt, timeoutMs) {
         }],
         generationConfig: {
           temperature: 0,
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          thinkingConfig: {
+            thinkingLevel: "low"
+          }
         }
       })
     });
@@ -398,75 +524,144 @@ async function geminiRequest(apiKey, model, prompt, timeoutMs) {
       throw new Error("Gemini החזיר תשובה שאינה JSON תקין.");
     }
 
-    return normalizeIntent(parsed);
+    return normalizeIntents(parsed);
   } finally {
     clearTimeout(timer);
   }
 }
 
+function markKeyCooldown(apiKey) {
+  keyCooldownUntil[apiKey] = Date.now() + KEY_COOLDOWN_MS;
+}
+
+function isKeyCoolingDown(apiKey) {
+  return (keyCooldownUntil[apiKey] || 0) > Date.now();
+}
+
 async function parseWithKeyFailover(question) {
+  var local = null;
+
+  try {
+    local = heuristicIntentsDetailed(question);
+
+    if (local.confident) {
+      return {
+        intents: local.intents,
+        mode: "heuristic",
+        keyNumber: null
+      };
+    }
+  } catch (_) {}
+
   var keys = getKeys();
   var model = document.getElementById("model").value.trim() || "gemini-3.8-flash";
 
   if (!keys.length) {
-    return {
-      intent: heuristicIntent(question),
-      mode: "heuristic",
-      keyNumber: null
-    };
+    if (local && local.intents.length) {
+      return {
+        intents: local.intents,
+        mode: "heuristic-ambiguous",
+        keyNumber: null
+      };
+    }
+
+    throw new Error("לא הצלחתי לפרש את הבקשה, ואין מפתח Gemini זמין.");
   }
 
-  var failures = [];
+  var candidates = [];
   var start = currentKeyIndex % keys.length;
 
   for (var offset = 0; offset < keys.length; offset++) {
     var index = (start + offset) % keys.length;
+    var apiKey = keys[index];
+
+    if (!isKeyCoolingDown(apiKey)) {
+      candidates.push({
+        index: index,
+        apiKey: apiKey
+      });
+    }
+  }
+
+  if (!candidates.length) {
+    if (local && local.intents.length) {
+      return {
+        intents: local.intents,
+        mode: "heuristic-cooldown",
+        keyNumber: null
+      };
+    }
+
+    throw new Error("כל מפתחות Gemini נמצאים כרגע בהשהיה לאחר כשל קודם.");
+  }
+
+  candidates = candidates.slice(0, MAX_GEMINI_ATTEMPTS_PER_QUESTION);
+
+  var failures = [];
+
+  for (var i = 0; i < candidates.length; i++) {
+    var candidate = candidates[i];
 
     setStatus(
-      "Gemini: מנסה מפתח " + (index + 1) + " מתוך " + keys.length + "…",
+      "Gemini: מנסה מפתח " +
+        (candidate.index + 1) +
+        " · ניסיון " +
+        (i + 1) +
+        " מתוך " +
+        candidates.length +
+        "…",
       "",
       true
     );
 
     try {
-      var intent = await geminiRequest(
-        keys[index],
+      var intents = await geminiRequest(
+        candidate.apiKey,
         model,
         buildParserPrompt(question),
-        18000
+        GEMINI_TIMEOUT_MS
       );
 
-      currentKeyIndex = index;
+      currentKeyIndex = candidate.index;
 
       return {
-        intent: intent,
+        intents: intents,
         mode: "gemini",
-        keyNumber: index + 1
+        keyNumber: candidate.index + 1
       };
     } catch (error) {
+      markKeyCooldown(candidate.apiKey);
+
       failures.push(
-        "מפתח " + (index + 1) + ": " + (error.message || "שגיאה")
+        "מפתח " +
+          (candidate.index + 1) +
+          ": " +
+          (error && error.name === "AbortError"
+            ? "חרג מזמן ההמתנה"
+            : (error.message || "שגיאה"))
       );
 
-      currentKeyIndex = (index + 1) % keys.length;
+      currentKeyIndex = (candidate.index + 1) % keys.length;
     }
   }
 
-  try {
+  if (local && local.intents.length) {
     return {
-      intent: heuristicIntent(question),
+      intents: local.intents,
       mode: "heuristic-after-failure",
       keyNumber: null,
       failures: failures
     };
-  } catch (_) {
-    var finalError = new Error(
-      "כל מפתחות Gemini נכשלו ולא ניתן היה לפרש את השאלה ידנית."
-    );
-
-    finalError.details = failures;
-    throw finalError;
   }
+
+  var finalError = new Error(
+    "Gemini לא סיים בזמן. נעצרתי אחרי " +
+      candidates.length +
+      " מפתחות במקום להמשיך בלולאה."
+  );
+
+  finalError.details = failures;
+  throw finalError;
 }
 
 function findMatchingCompetitions(person, eventId, rankType, best) {
@@ -634,7 +829,7 @@ function formatDate(dateString) {
   });
 }
 
-function renderRecord(result, parseMeta) {
+function renderRecordCard(result) {
   var intent = result.intent;
   var best = result.holders[0].rank.best;
   var formatted = formatResult(intent.eventId, intent.rankType, best);
@@ -642,20 +837,13 @@ function renderRecord(result, parseMeta) {
   var regionLabel = regionName(intent.region);
   var eventLabel = eventName(intent.eventId);
 
-  var exportDate =
-    sourceVersion && sourceVersion.export_date
-      ? new Date(sourceVersion.export_date).toLocaleDateString("he-IL")
-      : "לא ידוע";
-
   var holdersHtml = result.holders
     .map(function (ctx) {
       var person = ctx.person || {};
       var competition = ctx.competition;
       var match = ctx.match;
-
       var personLink =
         WCA_SITE + "/persons/" + encodeURIComponent(ctx.rank.personId);
-
       var details = "";
 
       if (competition) {
@@ -700,21 +888,8 @@ function renderRecord(result, parseMeta) {
     })
     .join("");
 
-  var modeText;
-
-  if (parseMeta.mode === "gemini") {
-    modeText =
-      "השאלה פורשה באמצעות Gemini, מפתח " +
-      parseMeta.keyNumber +
-      ".";
-  } else if (parseMeta.mode === "heuristic-after-failure") {
-    modeText =
-      "מפתחות Gemini לא החזירו תשובה; השאלה פורשה באמצעות מנגנון גיבוי מקומי.";
-  } else {
-    modeText = "השאלה פורשה באמצעות מנגנון מקומי.";
-  }
-
-  var html = [
+  return [
+    '<section class="record-card">',
     '<div class="record-head">',
     '<div class="record-value">',
     escapeHtml(formatted),
@@ -731,22 +906,56 @@ function renderRecord(result, parseMeta) {
     "</div>",
     holdersHtml,
     '<div class="sources">',
+    '<a target="_blank" rel="noopener" href="',
+    escapeHtml(result.rankUrl),
+    '">JSON של הדירוג</a>',
+    "</div>",
+    "</section>"
+  ].join("");
+}
+
+function renderRecords(results, parseMeta) {
+  var exportDate =
+    sourceVersion && sourceVersion.export_date
+      ? new Date(sourceVersion.export_date).toLocaleDateString("he-IL")
+      : "לא ידוע";
+
+  var modeText;
+
+  if (parseMeta.mode === "gemini") {
+    modeText =
+      "הבקשה פורשה באמצעות Gemini, מפתח " +
+      parseMeta.keyNumber +
+      ".";
+  } else if (parseMeta.mode === "heuristic-after-failure") {
+    modeText =
+      "Gemini לא סיים בזמן; הבקשה הושלמה באמצעות המפרש המקומי.";
+  } else if (parseMeta.mode === "heuristic-ambiguous") {
+    modeText =
+      "הבקשה פורשה מקומית ללא Gemini; בבקשה מורכבת ייתכן שכדאי לנסח כל קבוצה בנפרד.";
+  } else {
+    modeText =
+      "הבקשה זוהתה מקומית ולכן לא היה צורך לקרוא ל-Gemini.";
+  }
+
+  var cards = results.map(renderRecordCard).join("");
+
+  document.getElementById("answer").innerHTML = [
+    '<div class="multi-summary">',
+    "<strong>",
+    escapeHtml(results.length),
+    " שיאים נמצאו</strong>",
     "<div>",
     escapeHtml(modeText),
     "</div>",
-    "<div>מקור התוצאה: WCA Results Export דרך Unofficial WCA Public API. תאריך הייצוא: ",
+    "<div>מקור: WCA Results Export. תאריך הייצוא: ",
     escapeHtml(exportDate),
     ".</div>",
-    '<div><a target="_blank" rel="noopener" href="',
-    escapeHtml(WCA_SITE + "/records"),
-    '">רשומות WCA</a> · ',
-    '<a target="_blank" rel="noopener" href="',
-    escapeHtml(result.rankUrl),
-    '">JSON של הדירוג</a></div>',
+    "</div>",
+    '<div class="record-list">',
+    cards,
     "</div>"
   ].join("");
-
-  document.getElementById("answer").innerHTML = html;
 }
 
 async function askAgent() {
@@ -764,30 +973,68 @@ async function askAgent() {
 
   try {
     var parsed = await parseWithKeyFailover(question);
+    var intents = parsed.intents;
 
     setStatus(
-      "זוהה: " +
-        eventName(parsed.intent.eventId) +
-        " · " +
-        (parsed.intent.rankType === "average" ? "Average" : "Single") +
-        " · " +
-        regionName(parsed.intent.region),
+      "זוהו " + intents.length + " שיאים. שולף נתוני WCA…",
       "",
       true
     );
 
-    var result = await fetchRecord(parsed.intent);
+    var settled = await Promise.allSettled(
+      intents.map(function (intent) {
+        return fetchRecord(intent);
+      })
+    );
 
-    renderRecord(result, parsed);
+    var results = [];
+    var errors = [];
 
-    if (parsed.mode === "heuristic-after-failure") {
+    settled.forEach(function (item, index) {
+      if (item.status === "fulfilled") {
+        results.push(item.value);
+      } else {
+        errors.push({
+          intent: intents[index],
+          error: item.reason
+        });
+      }
+    });
+
+    if (!results.length) {
+      throw new Error(
+        errors.length
+          ? errors[0].error.message
+          : "לא נמצאו תוצאות."
+      );
+    }
+
+    renderRecords(results, parsed);
+
+    if (errors.length) {
       setStatus(
-        "הנתון נשלף מה-WCA; Gemini נכשל ולכן הופעל Parser מקומי.",
+        results.length +
+          " שיאים הוצגו, ו-" +
+          errors.length +
+          " בקשות לא היו זמינות.",
+        "warn",
+        false
+      );
+    } else if (
+      parsed.mode === "heuristic-after-failure" ||
+      parsed.mode === "heuristic-cooldown"
+    ) {
+      setStatus(
+        "הבדיקה הושלמה בלי להמשיך בין מפתחות Gemini תקועים.",
         "warn",
         false
       );
     } else {
-      setStatus("הבדיקה הושלמה.", "good", false);
+      setStatus(
+        "הבדיקה הושלמה: " + results.length + " שיאים.",
+        "good",
+        false
+      );
     }
   } catch (error) {
     var extra =
