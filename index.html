@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Cubing Agent</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="hero">
+      <div>
+        <h1>Cubing Agent</h1>
+        <p>
+          שאל על שיאי ספידקיובינג בשפה חופשית. Gemini מפרש את השאלה,
+          אבל תוצאת השיא עצמה נשלפת ממאגר תוצאות WCA שמתעדכן מדי יום.
+        </p>
+      </div>
+      <div class="source-pill" id="sourceDate">טוען תאריך נתונים…</div>
+    </section>
+
+    <section class="grid">
+      <div class="card main-card">
+        <label class="label" for="question">מה תרצה לבדוק?</label>
+        <textarea id="question" placeholder="לדוגמה: מה שיא העולם ב-3x3 single?"></textarea>
+
+        <div class="examples">
+          <button class="chip" data-q="מה שיא העולם ב-3x3 single?">3x3 WR single</button>
+          <button class="chip" data-q="מה שיא העולם בממוצע 4x4?">4x4 WR average</button>
+          <button class="chip" data-q="מה שיא ישראל ב-2x2 single?">שיא ישראל 2x2</button>
+          <button class="chip" data-q="מה שיא העולם ב-3x3 ביד אחת ממוצע?">3x3 OH average</button>
+        </div>
+
+        <div class="ask-row">
+          <button class="primary" id="askBtn">בדוק שיא</button>
+          <span class="status" id="status"></span>
+        </div>
+
+        <div class="answer" id="answer">
+          <div class="answer-empty">
+            התשובה תופיע כאן. אפשר לשאול על World Record, שיא מדינה או יבשת,
+            ועל Single או Average.
+          </div>
+        </div>
+      </div>
+
+      <aside class="card settings-card">
+        <h2>הגדרות Gemini</h2>
+        <p class="intro">
+          אפשר להכניס כמה מפתחות שתרצה. אם מפתח אחד נכשל, הסוכן עובר אוטומטית לבא אחריו.
+        </p>
+
+        <div class="field">
+          <label class="label" for="apiKeys">מפתחות API</label>
+          <textarea id="apiKeys" placeholder="מפתח אחד בכל שורה&#10;AIza...&#10;AIza..."></textarea>
+          <small id="keyCount">0 מפתחות הוגדרו</small>
+        </div>
+
+        <div class="field">
+          <label class="label" for="model">מודל</label>
+          <input id="model" value="gemini-3.8-flash" dir="ltr" />
+          <small>אפשר להחליף מודל בלי לשנות את הקוד.</small>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="rememberKeys" />
+          <span>שמור את המפתחות בדפדפן הזה. מומלץ להשאיר כבוי במחשב משותף.</span>
+        </label>
+
+        <button class="secondary" id="saveSettings">שמור הגדרות</button>
+
+        <div class="security">
+          <strong>אבטחה:</strong>
+          זו אפליקציית HTML בדפדפן. אם האתר ציבורי, עדיף לא לשמור מפתחות סודיים בקוד
+          או ב-LocalStorage. לפרודקשן מומלץ להעביר את Gemini לצד שרת.
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
