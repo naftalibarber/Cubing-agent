@@ -310,9 +310,32 @@ function removeAliases(text, aliases) {
   return out;
 }
 
+function findAliasMatches(text, eventId, aliases, priority) {
+  var matches = [];
+
+  aliases.forEach(function (alias) {
+    var start = 0;
+
+    while (true) {
+      var index = text.indexOf(alias, start);
+      if (index < 0) break;
+
+      matches.push({
+        eventId: eventId,
+        index: index,
+        end: index + alias.length,
+        priority: priority
+      });
+
+      start = index + Math.max(alias.length, 1);
+    }
+  });
+
+  return matches;
+}
+
 function extractEventIds(question) {
-  var working = String(question || "").toLowerCase();
-  var found = [];
+  var text = String(question || "").toLowerCase();
 
   var specialized = [
     ["333mbf", ["3x3 multi blind", "3x3 multi-blind", "3x3 מולטי בליינד", "3x3 מולטי עיוור", "multi blind", "multi-blind", "mbld", "מולטי בליינד", "מולטי עיוור"]],
@@ -328,13 +351,6 @@ function extractEventIds(question) {
     ["sq1", ["square-1", "square 1", "sq1", "סקוור"]]
   ];
 
-  specialized.forEach(function (row) {
-    if (containsAny(working, row[1])) {
-      found.push(row[0]);
-      working = removeAliases(working, row[1]);
-    }
-  });
-
   var standard = [
     ["777", ["7x7", "7×7", "777"]],
     ["666", ["6x6", "6×6", "666"]],
@@ -344,14 +360,50 @@ function extractEventIds(question) {
     ["222", ["2x2", "2×2", "222"]]
   ];
 
+  var specializedMatches = [];
+
+  specialized.forEach(function (row) {
+    specializedMatches = specializedMatches.concat(
+      findAliasMatches(text, row[0], row[1], 0)
+    );
+  });
+
+  var allMatches = specializedMatches.slice();
+
   standard.forEach(function (row) {
-    if (containsAny(working, row[1])) {
-      found.push(row[0]);
-      working = removeAliases(working, row[1]);
+    var matches = findAliasMatches(text, row[0], row[1], 1);
+
+    matches.forEach(function (match) {
+      var overlapsSpecialized = specializedMatches.some(function (special) {
+        return (
+          match.index < special.end &&
+          match.end > special.index
+        );
+      });
+
+      if (!overlapsSpecialized) {
+        allMatches.push(match);
+      }
+    });
+  });
+
+  allMatches.sort(function (a, b) {
+    if (a.index !== b.index) return a.index - b.index;
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return (b.end - b.index) - (a.end - a.index);
+  });
+
+  var seen = Object.create(null);
+  var found = [];
+
+  allMatches.forEach(function (match) {
+    if (!seen[match.eventId]) {
+      seen[match.eventId] = true;
+      found.push(match.eventId);
     }
   });
 
-  return Array.from(new Set(found));
+  return found;
 }
 
 function extractRankTypes(question) {
