@@ -315,12 +315,12 @@ function extractEventIds(question) {
   var found = [];
 
   var specialized = [
-    ["333mbf", ["multi blind", "multi-blind", "mbld", "מולטי בליינד", "מולטי עיוור"]],
+    ["333mbf", ["3x3 multi blind", "3x3 multi-blind", "3x3 מולטי בליינד", "3x3 מולטי עיוור", "multi blind", "multi-blind", "mbld", "מולטי בליינד", "מולטי עיוור"]],
     ["555bf", ["5x5 blind", "5x5 blindfolded", "555bf", "5x5 עיוור"]],
     ["444bf", ["4x4 blind", "4x4 blindfolded", "444bf", "4x4 עיוור"]],
     ["333bf", ["3x3 blind", "3x3 blindfolded", "333bf", "3x3 עיוור"]],
-    ["333fm", ["fewest moves", "fmc", "333fm", "מעט מהלכים"]],
-    ["333oh", ["one-handed", "one handed", "333oh", "יד אחת"]],
+    ["333fm", ["3x3 fewest moves", "3x3 fmc", "3x3 מעט מהלכים", "fewest moves", "fmc", "333fm", "מעט מהלכים"]],
+    ["333oh", ["3x3 one-handed", "3x3 one handed", "3x3 ביד אחת", "3x3 יד אחת", "one-handed", "one handed", "333oh", "יד אחת"]],
     ["clock", ["rubik's clock", "rubiks clock", "clock", "שעון"]],
     ["minx", ["megaminx", "מגמינקס"]],
     ["pyram", ["pyraminx", "פירמינקס"]],
