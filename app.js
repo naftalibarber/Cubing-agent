@@ -504,13 +504,81 @@ function buildParserPrompt(question) {
   ].join("\n");
 }
 
-async function geminiRequest(apiKey, model, prompt, timeoutMs) {
-  var controller = new AbortController();
-  var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 18000);
+function buildContinuationPrompt(originalPrompt, partialText) {
+  var partial = String(partialText || "").slice(-8000);
+
+  return [
+    originalPrompt,
+    "",
+    "IMPORTANT CONTINUATION:",
+    "A previous API key started the response but was interrupted.",
+    "Here is the partial output already produced:",
+    partial,
+    "",
+    "Continue the SAME task using the partial output as progress.",
+    "Return one COMPLETE valid JSON object in the required schema.",
+    "Preserve any valid intents already present, finish missing ones, remove duplicates, and repair truncated JSON.",
+    "Do not explain what happened and do not restart the task conceptually from zero."
+  ].join("\n");
+}
+
+function extractTextFromStreamPayload(payload) {
+  if (
+    !payload ||
+    !payload.candidates ||
+    !payload.candidates[0] ||
+    !payload.candidates[0].content ||
+    !payload.candidates[0].content.parts
+  ) {
+    return "";
+  }
+
+  return payload.candidates[0].content.parts
+    .map(function (part) {
+      return part.text || "";
+    })
+    .join("");
+}
+
+function parseSseEvent(eventText) {
+  var dataLines = String(eventText || "")
+    .split(/\r?\n/)
+    .filter(function (line) {
+      return line.startsWith("data:");
+    })
+    .map(function (line) {
+      return line.slice(5).trimStart();
+    });
+
+  if (!dataLines.length) return null;
+
+  var dataText = dataLines.join("\n").trim();
+
+  if (!dataText || dataText === "[DONE]") return null;
 
   try {
-    var url = "https://generativelanguage.googleapis.com/v1beta/models/" +
-      encodeURIComponent(model) + ":generateContent";
+    return JSON.parse(dataText);
+  } catch (_) {
+    return null;
+  }
+}
+
+async function geminiRequest(apiKey, model, prompt, timeoutMs, partialFromPreviousKey) {
+  var controller = new AbortController();
+  var timer = setTimeout(function () {
+    controller.abort();
+  }, timeoutMs || 18000);
+
+  var answerText = "";
+  var effectivePrompt = partialFromPreviousKey
+    ? buildContinuationPrompt(prompt, partialFromPreviousKey)
+    : prompt;
+
+  try {
+    var url =
+      "https://generativelanguage.googleapis.com/v1beta/models/" +
+      encodeURIComponent(model) +
+      ":streamGenerateContent?alt=sse";
 
     var response = await fetch(url, {
       method: "POST",
@@ -522,7 +590,7 @@ async function geminiRequest(apiKey, model, prompt, timeoutMs) {
       body: JSON.stringify({
         contents: [{
           role: "user",
-          parts: [{ text: prompt }]
+          parts: [{ text: effectivePrompt }]
         }],
         generationConfig: {
           temperature: 0,
@@ -534,49 +602,93 @@ async function geminiRequest(apiKey, model, prompt, timeoutMs) {
       })
     });
 
-    var raw = await response.text();
-    var data = null;
-
-    try {
-      data = JSON.parse(raw);
-    } catch (_) {}
-
     if (!response.ok) {
-      var msg = data && data.error && data.error.message
-        ? data.error.message
-        : raw || ("HTTP " + response.status);
+      var rawError = await response.text();
+      var data = null;
 
-      var err = new Error(msg);
-      err.status = response.status;
-      throw err;
+      try {
+        data = JSON.parse(rawError);
+      } catch (_) {}
+
+      var msg =
+        data && data.error && data.error.message
+          ? data.error.message
+          : rawError || ("HTTP " + response.status);
+
+      var httpError = new Error(msg);
+      httpError.status = response.status;
+      httpError.partialText = answerText;
+      throw httpError;
     }
 
-    var answerText = "";
+    if (!response.body || !response.body.getReader) {
+      var fullText = await response.text();
+      var fallbackEvents = fullText.split(/\r?\n\r?\n/);
 
-    if (
-      data &&
-      data.candidates &&
-      data.candidates[0] &&
-      data.candidates[0].content &&
-      data.candidates[0].content.parts
-    ) {
-      answerText = data.candidates[0].content.parts
-        .map(function (part) { return part.text || ""; })
-        .join("")
-        .trim();
+      fallbackEvents.forEach(function (eventText) {
+        var payload = parseSseEvent(eventText);
+        if (payload) answerText += extractTextFromStreamPayload(payload);
+      });
+    } else {
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = "";
+
+      while (true) {
+        var readResult = await reader.read();
+
+        if (readResult.done) break;
+
+        buffer += decoder.decode(readResult.value, { stream: true });
+
+        var events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() || "";
+
+        events.forEach(function (eventText) {
+          var payload = parseSseEvent(eventText);
+
+          if (payload) {
+            answerText += extractTextFromStreamPayload(payload);
+          }
+        });
+      }
+
+      buffer += decoder.decode();
+
+      if (buffer.trim()) {
+        var lastPayload = parseSseEvent(buffer);
+        if (lastPayload) answerText += extractTextFromStreamPayload(lastPayload);
+      }
     }
 
-    if (!answerText) throw new Error("Gemini לא החזיר תוכן.");
+    answerText = answerText.trim();
+
+    if (!answerText) {
+      var emptyError = new Error("Gemini לא החזיר תוכן.");
+      emptyError.partialText = "";
+      throw emptyError;
+    }
 
     var parsed;
 
     try {
       parsed = JSON.parse(answerText);
     } catch (_) {
-      throw new Error("Gemini החזיר תשובה שאינה JSON תקין.");
+      var jsonError = new Error("Gemini נקטע לפני שהחזיר JSON מלא.");
+      jsonError.partialText = answerText;
+      throw jsonError;
     }
 
-    return normalizeIntents(parsed);
+    return {
+      intents: normalizeIntents(parsed),
+      rawText: answerText
+    };
+  } catch (error) {
+    if (!error.partialText) {
+      error.partialText = answerText;
+    }
+
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -650,39 +762,60 @@ async function parseWithKeyFailover(question) {
   candidates = candidates.slice(0, MAX_GEMINI_ATTEMPTS_PER_QUESTION);
 
   var failures = [];
+  var carriedPartial = "";
+  var parserPrompt = buildParserPrompt(question);
 
   for (var i = 0; i < candidates.length; i++) {
     var candidate = candidates[i];
+    var continuing = carriedPartial.length > 0;
 
     setStatus(
-      "Gemini: מנסה מפתח " +
-        (candidate.index + 1) +
-        " · ניסיון " +
-        (i + 1) +
-        " מתוך " +
-        candidates.length +
-        "…",
+      continuing
+        ? "Gemini: מפתח " +
+            (candidate.index + 1) +
+            " ממשיך מהתשובה החלקית של המפתח הקודם…"
+        : "Gemini: מנסה מפתח " +
+            (candidate.index + 1) +
+            " · ניסיון " +
+            (i + 1) +
+            " מתוך " +
+            candidates.length +
+            "…",
       "",
       true
     );
 
     try {
-      var intents = await geminiRequest(
+      var result = await geminiRequest(
         candidate.apiKey,
         model,
-        buildParserPrompt(question),
-        GEMINI_TIMEOUT_MS
+        parserPrompt,
+        GEMINI_TIMEOUT_MS,
+        carriedPartial
       );
 
       currentKeyIndex = candidate.index;
 
       return {
-        intents: intents,
-        mode: "gemini",
-        keyNumber: candidate.index + 1
+        intents: result.intents,
+        mode: continuing ? "gemini-continuation" : "gemini",
+        keyNumber: candidate.index + 1,
+        continuedFromPreviousKey: continuing
       };
     } catch (error) {
       markKeyCooldown(candidate.apiKey);
+
+      if (error.partialText && error.partialText.trim()) {
+        carriedPartial = error.partialText.trim();
+
+        setStatus(
+          "מפתח " +
+            (candidate.index + 1) +
+            " נקטע אחרי שהחזיר חלק מהתשובה. שומר את ההתקדמות ומעביר למפתח הבא…",
+          "warn",
+          true
+        );
+      }
 
       failures.push(
         "מפתח " +
@@ -700,19 +833,25 @@ async function parseWithKeyFailover(question) {
   if (local && local.intents.length) {
     return {
       intents: local.intents,
-      mode: "heuristic-after-failure",
+      mode: carriedPartial
+        ? "heuristic-after-partial-failure"
+        : "heuristic-after-failure",
       keyNumber: null,
-      failures: failures
+      failures: failures,
+      partialPreserved: carriedPartial
     };
   }
 
   var finalError = new Error(
-    "Gemini לא סיים בזמן. נעצרתי אחרי " +
-      candidates.length +
-      " מפתחות במקום להמשיך בלולאה."
+    carriedPartial
+      ? "Gemini התחיל תשובה וההתקדמות הועברה למפתח הבא, אבל גם המפתח הבא לא הצליח להשלים אותה."
+      : "Gemini לא סיים בזמן. נעצרתי אחרי " +
+          candidates.length +
+          " מפתחות במקום להמשיך בלולאה."
   );
 
   finalError.details = failures;
+  finalError.partialText = carriedPartial;
   throw finalError;
 }
 
@@ -974,7 +1113,12 @@ function renderRecords(results, parseMeta) {
 
   var modeText;
 
-  if (parseMeta.mode === "gemini") {
+  if (parseMeta.mode === "gemini-continuation") {
+    modeText =
+      "מפתח Gemini קודם נקטע באמצע; ההתקדמות שלו הועברה למפתח " +
+      parseMeta.keyNumber +
+      ", שהשלים את אותה בקשה.";
+  } else if (parseMeta.mode === "gemini") {
     modeText =
       "הבקשה פורשה באמצעות Gemini, מפתח " +
       parseMeta.keyNumber +
@@ -1074,6 +1218,7 @@ async function askAgent() {
       );
     } else if (
       parsed.mode === "heuristic-after-failure" ||
+      parsed.mode === "heuristic-after-partial-failure" ||
       parsed.mode === "heuristic-cooldown"
     ) {
       setStatus(
