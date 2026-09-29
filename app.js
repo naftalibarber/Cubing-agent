@@ -10,7 +10,6 @@ var continentsCache = null;
 var keyCooldownUntil = Object.create(null);
 
 var GEMINI_TIMEOUT_MS = 7000;
-var MAX_GEMINI_ATTEMPTS_PER_QUESTION = 2;
 var KEY_COOLDOWN_MS = 5 * 60 * 1000;
 var MAX_RECORDS_PER_QUERY = 20;
 
@@ -759,11 +758,11 @@ async function parseWithKeyFailover(question) {
     throw new Error("כל מפתחות Gemini נמצאים כרגע בהשהיה לאחר כשל קודם.");
   }
 
-  candidates = candidates.slice(0, MAX_GEMINI_ATTEMPTS_PER_QUESTION);
 
   var failures = [];
   var carriedPartial = "";
   var parserPrompt = buildParserPrompt(question);
+  var totalCandidates = candidates.length;
 
   for (var i = 0; i < candidates.length; i++) {
     var candidate = candidates[i];
@@ -776,10 +775,10 @@ async function parseWithKeyFailover(question) {
             " ממשיך מהתשובה החלקית של המפתח הקודם…"
         : "Gemini: מנסה מפתח " +
             (candidate.index + 1) +
-            " · ניסיון " +
+            " · מפתח " +
             (i + 1) +
             " מתוך " +
-            candidates.length +
+            totalCandidates +
             "…",
       "",
       true
@@ -845,9 +844,9 @@ async function parseWithKeyFailover(question) {
   var finalError = new Error(
     carriedPartial
       ? "Gemini התחיל תשובה וההתקדמות הועברה למפתח הבא, אבל גם המפתח הבא לא הצליח להשלים אותה."
-      : "Gemini לא סיים בזמן. נעצרתי אחרי " +
+      : "Gemini לא סיים גם אחרי שנוסו כל " +
           candidates.length +
-          " מפתחות במקום להמשיך בלולאה."
+          " המפתחות הזמינים פעם אחת."
   );
 
   finalError.details = failures;
